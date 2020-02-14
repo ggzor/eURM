@@ -28,13 +28,19 @@ data EURM =
   | AliasDeclaration 
       { _name   :: !String
       , _target :: !Variable }
-  | MinimizationDeclaration 
+  | BoundedMinimizationDeclaration 
       { _name       :: !String
       , _parameters :: ![Variable]
       , _index      :: !Variable
       , _top        :: !Expression
-      , _predicate  :: !Expression }
+      , _body       :: !Expression }
   | BoundedSumDeclaration
+      { _name       :: !String
+      , _parameters :: ![Variable]
+      , _index      :: !Variable
+      , _top        :: !Expression
+      , _body       :: !Expression }
+  | BoundedProductDeclaration
       { _name       :: !String
       , _parameters :: ![Variable]
       , _index      :: !Variable
