@@ -1,5 +1,7 @@
 module URM.Extended.Parser where
 
+import Control.Lens
+
 import URM.RawParser (multipleURMStatements)
 import URM.Extended.Core hiding (name)
 import URM.Parsing
@@ -22,11 +24,16 @@ multipleDeclarations :: Parser [EURM]
 multipleDeclarations = spaceConsumer >> many (lexeme declaration)
 
 declaration :: Parser EURM
-declaration = choice [rawDeclaration, recursiveDeclaration, minimizationDeclaration, boundedSumDeclaration,
-                        compositeDeclaration, aliasDeclaration ]
+declaration = choice [ rawDeclaration
+                     , recursiveDeclaration
+                     , boundedMinimizationDeclaration
+                     , boundedSumDeclaration
+                     , boundedProductDeclaration
+                     , compositeDeclaration
+                     , aliasDeclaration ]
 
 rawDeclaration, recursiveDeclaration, 
-  compositeDeclaration, aliasDeclaration, minimizationDeclaration :: Parser EURM
+  compositeDeclaration, aliasDeclaration, boundedMinimizationDeclaration :: Parser EURM
 
 name :: Parser String
 name = lexeme $ (:) <$> letterChar <*> many alphaNumChar
@@ -73,28 +80,19 @@ compositeDeclaration =
 
 aliasDeclaration = AliasDeclaration <$> name <* symbol "=" <*> name
 
-minimizationDeclaration =
-  do (_name, _parameters) <- try $ do decName <- name 
-                                      symbol "("
-                                      parameters <- name `sepBy1` symbol ","
-                                      symbols ")="
-                                      string "μ"
-                                      return (decName, parameters)
-     _index <- name
-     symbol "<"
-     _top <- expression
-     _predicate <- between (symbol "[") (symbol "]") expression
-     return $ MinimizationDeclaration {..}
+boundedMinimizationDeclaration = boundedDeclaration "μ" _BoundedMinimizationDeclaration
+boundedSumDeclaration          = boundedDeclaration "Σ" _BoundedSumDeclaration
+boundedProductDeclaration      = boundedDeclaration "Π" _BoundedProductDeclaration
 
-boundedSumDeclaration =
+boundedDeclaration identifier prism =
   do (_name, _parameters) <- try $ do decName <- name 
                                       symbol "("
                                       parameters <- name `sepBy1` symbol ","
                                       symbols ")="
-                                      string "Σ"
+                                      string identifier
                                       return (decName, parameters)
      _index <- name
      symbol "<"
      _top <- expression
      _body <- between (symbol "[") (symbol "]") expression
-     return $ BoundedSumDeclaration {..}
+     return $ prism # (_name, _parameters, _index, _top, _body)
