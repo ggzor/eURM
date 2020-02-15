@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 36b3ab7296fd5812d9a1cb1a4ab0ef2be9213facbfd844601d6307a17a46e5a1
+-- hash: c560c28daa77157bc01a4aa0aec7d8de8df5e6ad72d3543f8df964199b990f48
 
 name:           eURM
 version:        0.1.0.0
@@ -27,6 +27,7 @@ source-repository head
 
 library
   exposed-modules:
+      URM.Combination
       URM.Core
       URM.Extended.Compiler
       URM.Extended.Core

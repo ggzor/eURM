@@ -1,9 +1,10 @@
 module URM.Core where
 
 import Control.Lens
-import Data.Vector (Vector)
+import Data.Maybe (fromMaybe)
+import qualified Data.Vector as V
 
-type Instructions = Vector URM
+type Instructions = V.Vector URM
 
 data URM = Zero      { _register :: !Int }
          | Successor { _register :: !Int }
@@ -12,6 +13,17 @@ data URM = Zero      { _register :: !Int }
 
 makeLenses ''URM
 makePrisms ''URM
+
+urmConstant :: Int -> Instructions
+urmConstant i = V.fromList $ Zero 1 : (Successor 1 <$ [1..i])
+
+urmProject :: Int -> Instructions
+urmProject i = V.singleton $ Transfer i 1
+
+-- FIXME: Optimizable with Max functor
+ro :: Instructions -> Int
+ro = fromMaybe 0 . maximumOf (folded.folding
+        (\i -> foldMap (i ^..) [register, source, target, left, right]))
 
 instance Show URM where
   show (Zero r) = "Z(" ++ show r ++ ")"

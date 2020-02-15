@@ -1,6 +1,7 @@
 module URM.Extended.Compiler where
 
 import URM.Core
+import URM.Combination
 import URM.Optimization.LowLevel
 import URM.Extended.Core hiding (target)
 
@@ -67,7 +68,7 @@ compileEURM programs = Right $ removeBuiltIns (evalState (processPrograms progra
                                 , x ^? _BoundedMinimizationDeclaration >>= fromBoundedMinimizationDeclaration env]
                  optimizations = Prelude.foldl (.) id [removeUselessTransfers]
              newProgram & maybe (pure ()) (\instructions -> 
-               loadedPrograms %= M.insert newProgramName (optimizations . standarizeURM $ instructions))
+               loadedPrograms %= M.insert newProgramName (standarize $ instructions))
              processPrograms xs
 
 type BoundedMinimizationDeclarationFields = (String, [Variable], Variable, Expression, Expression)
@@ -137,7 +138,7 @@ fromRecursiveDeclaration env (name, nonRecursiveVars, recursiveVar, baseCase, re
                                                       nonRecursiveVars recursiveVar recursiveResultVar
                                                       recursiveStep
       recursiveStepProgram = expressionToProgram recursiveStepParams env =<< recursiveStepExpression
-  in  recurseURM n <$> baseCaseProgram <*> recursiveStepProgram
+  in  recurse n <$> baseCaseProgram <*> recursiveStepProgram
 
 replaceRecursiveCalls :: String -> [Variable] -> Variable -> Variable -> Expression -> Maybe Expression
 replaceRecursiveCalls name extraVars recursiveVar specialVarName expr = 
@@ -161,57 +162,4 @@ expressionToProgram variables programs (Name name) =
 expressionToProgram variables programs (Call name params) =
   do program <- M.lookup name programs
      parametersPrograms <- traverse (expressionToProgram variables programs) params
-     return $ composeURM (M.size variables) program parametersPrograms
-
-standarizeURM :: Instructions -> Instructions
-standarizeURM program = program & traversed._Jump._3 %~ min (V.length program + 1)
-
--- Assumes top is standarized
-concatURM :: Instructions -> Instructions -> Instructions
-concatURM top bottom = top V.++ offsettedBottom
-  where offsettedBottom = bottom & traversed._Jump._3 +~ V.length top
-
--- FIXME: Optimizable with Max functor
-ro :: Instructions -> Int
-ro = fromMaybe 0 . maximumOf (folded.folding
-        (\i -> foldMap (i ^..) [register, source, target, left, right]))
-
-urmConstant :: Int -> Instructions
-urmConstant i = V.fromList $ Zero 1 : (Successor 1 <$ [1..i])
-
-urmProject :: Int -> Instructions
-urmProject i = V.singleton $ Transfer i 1
-
--- FIXME: Use proper vector functions
--- Assumes program is standarized
-urmCall :: [Int] -> Int -> Instructions -> Instructions
-urmCall parameters result program = 
-  V.fromList (
-              (uncurry Transfer <$> zip parameters [1..]) 
-  ++          (Zero <$> [length parameters + 1 .. ro program]))
-  `concatURM`  program 
-  `V.snoc`     Transfer 1 result
-
--- Assumes f and gs are standarized
-composeURM :: Int -> Instructions -> [Instructions] -> Instructions
-composeURM n f gs =
-  let k = length gs
-      m = maximum ([n, k, ro f] ++ fmap ro gs)
-  in Prelude.foldl concatURM 
-       (V.fromList (uncurry Transfer <$> zip [1..] [m + 1 .. m + n]))
-       (uncurry            (urmCall [m + 1 .. m + n]) <$> zip [m + n + 1 .. m + n + k] gs)
-       `concatURM`          urmCall [m + n + 1 .. m + n + k] 1 f
-
-recurseURM :: Int -> Instructions -> Instructions -> Instructions
-recurseURM n baseCase recursiveStep =
-  let m = maximum [n + 2, ro baseCase, ro recursiveStep]
-      firstPart = 
-        V.fromList 
-        (uncurry      Transfer <$> zip [1..] [m + 1 .. m + n + 1])
-        `concatURM`   urmCall [1..n] (m + n + 3) baseCase
-      stopCondition = Jump (m + n + 1) (m + n + 2) (V.length firstPart + 1 + V.length lastPart)
-      lastPart =      urmCall ([m + 1 .. m + n] ++ [m + n + 2, m + n + 3]) (m + n + 3) recursiveStep
-        `V.snoc`      Successor (m + n + 2)
-        `V.snoc`      Jump 1 1 (V.length firstPart - V.length firstPart)
-        `V.snoc`      Transfer (m + n + 3) 1
-  in  firstPart `V.snoc` stopCondition `concatURM` lastPart
+     return $ compose (M.size variables) program parametersPrograms
