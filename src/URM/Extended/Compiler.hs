@@ -1,6 +1,7 @@
 module URM.Extended.Compiler where
 
 import URM.Core
+import URM.Optimization.LowLevel
 import URM.Extended.Core hiding (target)
 
 import Data.Functor ((<&>))
@@ -64,8 +65,9 @@ compileEURM programs = Right $ removeBuiltIns (evalState (processPrograms progra
                                 , x ^? _BoundedSumDeclaration >>= fromBoundedSumDeclaration env
                                 , x ^? _BoundedProductDeclaration >>= fromBoundedProductDeclaration env
                                 , x ^? _BoundedMinimizationDeclaration >>= fromBoundedMinimizationDeclaration env]
+                 optimizations = Prelude.foldl (.) id [removeUselessTransfers]
              newProgram & maybe (pure ()) (\instructions -> 
-               loadedPrograms %= M.insert newProgramName (standarizeURM instructions))
+               loadedPrograms %= M.insert newProgramName (optimizations . standarizeURM $ instructions))
              processPrograms xs
 
 type BoundedMinimizationDeclarationFields = (String, [Variable], Variable, Expression, Expression)
