@@ -1,10 +1,10 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.31.2.
+-- This file has been generated from package.yaml by hpack version 0.31.1.
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 3dfa3729bc33b999a50f30e2ad61d109541ac328ceb044a71ff743aa9db219de
+-- hash: 36b3ab7296fd5812d9a1cb1a4ab0ef2be9213facbfd844601d6307a17a46e5a1
 
 name:           eURM
 version:        0.1.0.0
@@ -32,6 +32,7 @@ library
       URM.Extended.Core
       URM.Extended.Parser
       URM.Interpreter
+      URM.Optimization.LowLevel
       URM.Parsing
       URM.RawParser
   other-modules:
