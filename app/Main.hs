@@ -87,7 +87,7 @@ loadFile path =
        Nothing -> liftIO $ putStrLn ("Unable to find file " ++ path)
        Just contents -> do liftIO $ putStrLn $ "Loading file " ++ path
                            currentPrograms <- use programs
-                           case parseEURMFile contents of
+                           case parseEURMFile currentPrograms contents of
                              Left (SyntaxError error) -> 
                                do liftIO $ putStrLn "Syntax error:"
                                   liftIO $ putStr (errorBundlePretty error)
@@ -95,20 +95,12 @@ loadFile path =
                                do liftIO $ putStrLn "Compilation error:"
                                   liftIO $ print error
                              Right newPrograms ->
-                               if M.null newPrograms 
-                                 then liftIO $ putStrLn "No programs were found in the file."
-                                 else do currentPrograms <- use programs
-                                         let currentNames = M.keysSet currentPrograms
-                                         let newNames = M.keysSet newPrograms
-                                         let duplicatedNames = S.intersection currentNames newNames
-                                         let joinedNames names = unlines ["  - " ++ name | name <- S.toList names]
-                                         if S.null duplicatedNames
-                                           then do programs .= M.union currentPrograms newPrograms
-                                                   loadedFiles %= (++ [path])
-                                                   liftIO $ putStrLn $ "Successfully loaded " ++ show (S.size newNames) ++ " new programs:"
-                                                   liftIO $ putStrLn (joinedNames newNames)
-                                           else do liftIO $ putStrLn "Unable to load module, duplicated program names:"
-                                                   liftIO $ putStrLn (joinedNames duplicatedNames)
+                                 do let newNames = M.keysSet newPrograms
+                                    let joinedNames names = unlines ["  - " ++ name | name <- S.toList names]
+                                    programs .= newPrograms
+                                    loadedFiles %= (++ [path])
+                                    liftIO $ putStrLn $ "Successfully loaded " ++ show (S.size newNames) ++ " new programs:"
+                                    liftIO $ putStrLn (joinedNames newNames)
 
 readContentsIfExists :: String -> IO (Maybe String)
 readContentsIfExists path =
@@ -119,9 +111,9 @@ readContentsIfExists path =
 
 data EURMFileError = SyntaxError EURMParseError | CompilationError EURMCompilationError
 
-parseEURMFile :: String -> Either EURMFileError (Map String Instructions)
-parseEURMFile contents = first SyntaxError (parseEURM contents) 
-                           >>= (first CompilationError . compileEURM)
+parseEURMFile :: Env -> String -> Either EURMFileError (Map String Instructions)
+parseEURMFile env contents = first SyntaxError (parseEURM contents)
+                           >>= (first CompilationError . compileEURM env)
 
 {-
 Grammar

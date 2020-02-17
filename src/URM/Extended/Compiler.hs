@@ -54,8 +54,8 @@ removeBuiltIns =
   . M.delete "__builtin_sum" 
   . M.delete "__builtin_product"
 
-compileEURM :: [EURM] -> Either EURMCompilationError Env
-compileEURM programs = Right $ removeBuiltIns (evalState (processPrograms programs) $ CompilerState builtIns)
+compileEURM :: Env -> [EURM] -> Either EURMCompilationError Env
+compileEURM env programs = Right $ removeBuiltIns (evalState (processPrograms programs) $ CompilerState (M.union env builtIns))
   where processPrograms [] = use loadedPrograms
         processPrograms (x : xs) =
           do env <- use loadedPrograms
