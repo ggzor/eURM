@@ -14,6 +14,8 @@ import Control.Monad (join)
 import Control.Monad.Trans.State
 import Control.Lens
 
+import GHC.IO.Unsafe
+
 import Data.Map.Strict as M
 
 data EURMCompilationError = None
@@ -68,7 +70,7 @@ compileEURM programs = Right $ removeBuiltIns (evalState (processPrograms progra
                                 , x ^? _BoundedMinimizationDeclaration >>= fromBoundedMinimizationDeclaration env]
                  optimizations = Prelude.foldl (.) id [removeUselessTransfers]
              newProgram & maybe (pure ()) (\instructions -> 
-               loadedPrograms %= M.insert newProgramName (standarize $ instructions))
+               loadedPrograms %= M.insert newProgramName (optimizations . standarize $ instructions))
              processPrograms xs
 
 type BoundedMinimizationDeclarationFields = (String, [Variable], Variable, Expression, Expression)
