@@ -21,7 +21,7 @@ urmProject :: Int -> Instructions
 urmProject i = V.singleton $ Transfer i 1
 
 -- FIXME: Optimizable with Max functor
-ro :: Instructions -> Int
+ro :: forall f. Foldable f => f URM -> Int
 ro = fromMaybe 0 . maximumOf (folded.folding
         (\i -> foldMap (i ^..) [register, source, target, left, right]))
 
