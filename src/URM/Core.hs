@@ -1,6 +1,7 @@
 module URM.Core where
 
 import Control.Lens
+import Data.Bifunctor
 import Data.Maybe (fromMaybe)
 import qualified Data.Vector as V
 
@@ -30,3 +31,13 @@ instance Show URM where
   show (Successor r) = "S(" ++ show r ++ ")"
   show (Transfer s t) = "T(" ++ show s ++ ", " ++ show t ++ ")"
   show (Jump l r i) = "J(" ++ show l ++ ", " ++ show r ++ ", " ++ show i ++ ")"
+
+prettyPrintURM :: Instructions -> String
+prettyPrintURM instructions = 
+    unlines 
+  . fmap (\(n, i) ->    "  "
+                     ++ (replicate (length (show (V.length instructions)) - length (show n)) ' ')
+                     ++ show n
+                     ++ ". " ++ i)
+  . fmap (second show)
+  $ zip [1..] (V.toList instructions)

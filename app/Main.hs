@@ -63,20 +63,15 @@ mainInterpreter =
                case M.lookup programName currentPrograms of
                  Nothing -> liftIO $ putStrLn ("Unknown program name " ++ programName)
                  Just instructions -> do liftIO $ putStrLn (programName ++ ":")
-                                         liftIO $ putStrLn
-                                                    . unlines 
-                                                    . fmap (\(n, i) -> "  "
-                                                                     ++ (replicate (length (show (V.length instructions)) - length (show n)) ' ')
-                                                                     ++ show n
-                                                                     ++ ". " ++ i)
-                                                    . fmap (second show)
-                                                    $ zip [1..] (V.toList instructions)
+                                         liftIO $ putStrLn (prettyPrintURM instructions)
                mainInterpreter
-          ReplStatement (DumpCode programName path) ->
+          ReplStatement (DumpCode pretty programName path) ->
             do currentPrograms <- use programs
                case M.lookup programName currentPrograms of
                  Nothing -> liftIO $ putStrLn ("Unknown program name: " ++ programName)
-                 Just program -> liftIO $ writeFile path (unlines $ show <$> V.toList program)
+                 Just program -> liftIO $ writeFile path $ if pretty 
+                                                             then prettyPrintURM program
+                                                             else (unlines $ show <$> V.toList program)
                mainInterpreter
           ReplStatement (Load path) -> loadFile path >> mainInterpreter
           EvaluateStatement programName params ->
@@ -141,7 +136,7 @@ Grammar
 -}
 
 data CompilerFlag = Optimizations
-data ReplAction = Load String | DumpCode String String | SetCompilerFlag Bool CompilerFlag | ViewCode String | Reload | Quit
+data ReplAction = Load String | DumpCode Bool String String | SetCompilerFlag Bool CompilerFlag | ViewCode String | Reload | Quit
 data InterpreterStatement = ReplStatement ReplAction | EvaluateStatement String [Int]
 
 
@@ -156,7 +151,7 @@ replStatement = char ':' >> ReplStatement <$> (replLoadStatement <|> replViewCod
                                                 <|> replSetCompilerFlag <|> replQuitStatement <|> replReloadStatement)
   where replLoadStatement = Load <$> (string "load" *> space1 *> takeRest)
         replViewCodeStatement = ViewCode <$> (string "view" *> space1 *> takeRest)
-        replDumpCodeStatement = string "dump" *> space1 *> (DumpCode <$> name <*> takeRest)
+        replDumpCodeStatement = string "dump" *> (DumpCode <$> (maybe False (const True) <$> optional (string "+")) <*> (space1 *> name) <*> takeRest)
         replQuitStatement = Quit <$ string "quit"
         replSetCompilerFlag = string "set" *> space1 *> (SetCompilerFlag <$> (("+" ==) <$> (string "+" <|> string "-")) <*> compilerFlag)
         replReloadStatement = Reload <$ string "reload"
