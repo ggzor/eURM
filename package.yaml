@@ -38,6 +38,8 @@ default-extensions:
 - TemplateHaskell
 - TupleSections
 - TypeFamilies
+- ExistentialQuantification
+- LambdaCase
 
 library:
   source-dirs: src

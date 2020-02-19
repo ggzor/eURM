@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: c560c28daa77157bc01a4aa0aec7d8de8df5e6ad72d3543f8df964199b990f48
+-- hash: 050b64bfdf12e6e9da7cd1dd0645290804e8ed9e82cea66bd792b2c7088279e0
 
 name:           eURM
 version:        0.1.0.0
@@ -40,7 +40,7 @@ library
       Paths_eURM
   hs-source-dirs:
       src
-  default-extensions: FlexibleContexts FlexibleInstances OverloadedStrings RecordWildCards TemplateHaskell TupleSections TypeFamilies
+  default-extensions: FlexibleContexts FlexibleInstances OverloadedStrings RecordWildCards TemplateHaskell TupleSections TypeFamilies ExistentialQuantification LambdaCase
   build-depends:
       base >=4.7 && <5
     , containers >=0.6 && <0.7
@@ -59,7 +59,7 @@ executable eURM-exe
       Paths_eURM
   hs-source-dirs:
       app
-  default-extensions: FlexibleContexts FlexibleInstances OverloadedStrings RecordWildCards TemplateHaskell TupleSections TypeFamilies
+  default-extensions: FlexibleContexts FlexibleInstances OverloadedStrings RecordWildCards TemplateHaskell TupleSections TypeFamilies ExistentialQuantification LambdaCase
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
@@ -81,7 +81,7 @@ test-suite eURM-test
       Paths_eURM
   hs-source-dirs:
       test
-  default-extensions: FlexibleContexts FlexibleInstances OverloadedStrings RecordWildCards TemplateHaskell TupleSections TypeFamilies
+  default-extensions: FlexibleContexts FlexibleInstances OverloadedStrings RecordWildCards TemplateHaskell TupleSections TypeFamilies ExistentialQuantification LambdaCase
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
