@@ -5,7 +5,7 @@ import URM.Interpreter
 import URM.Parsing
 
 import URM.Extended.Compiler
-import URM.Extended.Parser (parseEURM, EURMParseError)
+import URM.Extended.Parser (parseEURM, name, EURMParseError)
 
 import Control.Lens
 
@@ -30,11 +30,14 @@ import Data.Void
 import System.IO
 import System.Directory
 
-data InterpreterState = InterpreterState { _programs :: !(Map String Instructions), _loadedFiles :: ![String] }
+data InterpreterState = 
+  InterpreterState { _programs :: !(Map String Instructions)
+                   , _compilerOptions :: !CompilerOptions
+                   , _loadedFiles :: ![String] }
 makeLenses ''InterpreterState
 
 main :: IO ()
-main = () <$ runMaybeT (evalStateT mainInterpreter (InterpreterState M.empty []))
+main = () <$ runMaybeT (evalStateT mainInterpreter (InterpreterState M.empty (CompilerOptions False) []))
 
 mainInterpreter :: StateT InterpreterState (MaybeT IO) ()
 mainInterpreter =
@@ -51,6 +54,10 @@ mainInterpreter =
                                      loadedFiles .= []
                                      mapM_ loadFile currentLoadedFiles
                                      mainInterpreter
+          ReplStatement (SetCompilerFlag value flag) ->
+            do case flag of 
+                 Optimizations -> compilerOptions.enableOptimizations .= value
+               mainInterpreter
           ReplStatement (ViewCode programName) ->
             do currentPrograms <- use programs
                case M.lookup programName currentPrograms of
@@ -65,6 +72,12 @@ mainInterpreter =
                                                     . fmap (second show)
                                                     $ zip [1..] (V.toList instructions)
                mainInterpreter
+          ReplStatement (DumpCode programName path) ->
+            do currentPrograms <- use programs
+               case M.lookup programName currentPrograms of
+                 Nothing -> liftIO $ putStrLn ("Unknown program name: " ++ programName)
+                 Just program -> liftIO $ writeFile path (unlines $ show <$> V.toList program)
+               mainInterpreter
           ReplStatement (Load path) -> loadFile path >> mainInterpreter
           EvaluateStatement programName params ->
             do currentPrograms <- use programs
@@ -77,7 +90,7 @@ mainInterpreter =
                                                        show
                                                        (evaluate maxInstructions program mappedParams)
                                    where mappedParams = M.fromAscList $ zip [1..] params
-                                         maxInstructions = 100000000
+                                         maxInstructions = 100000
                mainInterpreter
 
 loadFile :: String -> StateT InterpreterState (MaybeT IO) ()
@@ -87,7 +100,8 @@ loadFile path =
        Nothing -> liftIO $ putStrLn ("Unable to find file " ++ path)
        Just contents -> do liftIO $ putStrLn $ "Loading file " ++ path
                            currentPrograms <- use programs
-                           case parseEURMFile currentPrograms contents of
+                           options <- use compilerOptions
+                           case parseEURMFile currentPrograms options contents of
                              Left (SyntaxError error) -> 
                                do liftIO $ putStrLn "Syntax error:"
                                   liftIO $ putStr (errorBundlePretty error)
@@ -111,9 +125,9 @@ readContentsIfExists path =
 
 data EURMFileError = SyntaxError EURMParseError | CompilationError EURMCompilationError
 
-parseEURMFile :: Env -> String -> Either EURMFileError (Map String Instructions)
-parseEURMFile env contents = first SyntaxError (parseEURM contents)
-                           >>= (first CompilationError . compileEURM env)
+parseEURMFile :: Env -> CompilerOptions -> String -> Either EURMFileError (Map String Instructions)
+parseEURMFile env options contents = first SyntaxError (parseEURM contents)
+                                       >>= (first CompilationError . compileEURM env options)
 
 {-
 Grammar
@@ -126,7 +140,8 @@ Grammar
   <evaluate-program-statement> ::= <name> { <parameter> }
 -}
 
-data ReplAction = Load String | ViewCode String | Reload | Quit
+data CompilerFlag = Optimizations
+data ReplAction = Load String | DumpCode String String | SetCompilerFlag Bool CompilerFlag | ViewCode String | Reload | Quit
 data InterpreterStatement = ReplStatement ReplAction | EvaluateStatement String [Int]
 
 
@@ -137,9 +152,15 @@ evaluateProgramStatement :: MainParser InterpreterStatement
 evaluateProgramStatement = EvaluateStatement <$> lexeme (some alphaNumChar) <*> decimal `sepEndBy` space1
 
 replStatement :: MainParser InterpreterStatement
-replStatement = char ':' >> ReplStatement <$> (replLoadStatement <|> replViewCodeStatement
-                                                <|> replQuitStatement <|> replReloadStatement)
+replStatement = char ':' >> ReplStatement <$> (replLoadStatement <|> replViewCodeStatement <|> replDumpCodeStatement
+                                                <|> replSetCompilerFlag <|> replQuitStatement <|> replReloadStatement)
   where replLoadStatement = Load <$> (string "load" *> space1 *> takeRest)
         replViewCodeStatement = ViewCode <$> (string "view" *> space1 *> takeRest)
+        replDumpCodeStatement = string "dump" *> space1 *> (DumpCode <$> name <*> takeRest)
         replQuitStatement = Quit <$ string "quit"
+        replSetCompilerFlag = string "set" *> space1 *> (SetCompilerFlag <$> (("+" ==) <$> (string "+" <|> string "-")) <*> compilerFlag)
         replReloadStatement = Reload <$ string "reload"
+
+
+compilerFlag :: MainParser CompilerFlag
+compilerFlag = Optimizations <$ string "optimizations"
