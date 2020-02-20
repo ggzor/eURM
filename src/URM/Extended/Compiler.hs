@@ -25,6 +25,9 @@ instance Show EURMCompilationError where
 
 type Env = Map String Instructions
 
+data CompilerOptions = CompilerOptions { _enableOptimizations :: !Bool }
+makeLenses ''CompilerOptions
+
 data CompilerState = CompilerState { _loadedPrograms :: !Env }
 makeLenses ''CompilerState
 
@@ -54,8 +57,8 @@ removeBuiltIns =
   . M.delete "__builtin_sum" 
   . M.delete "__builtin_product"
 
-compileEURM :: Env -> [EURM] -> Either EURMCompilationError Env
-compileEURM env programs = Right $ removeBuiltIns (evalState (processPrograms programs) $ CompilerState (M.union env builtIns))
+compileEURM :: Env -> CompilerOptions -> [EURM] -> Either EURMCompilationError Env
+compileEURM env options programs = Right $ removeBuiltIns (evalState (processPrograms programs) $ CompilerState (M.union env builtIns))
   where processPrograms [] = use loadedPrograms
         processPrograms (x : xs) =
           do env <- use loadedPrograms
@@ -68,7 +71,9 @@ compileEURM env programs = Right $ removeBuiltIns (evalState (processPrograms pr
                                 , x ^? _BoundedSumDeclaration >>= fromBoundedSumDeclaration env
                                 , x ^? _BoundedProductDeclaration >>= fromBoundedProductDeclaration env
                                 , x ^? _BoundedMinimizationDeclaration >>= fromBoundedMinimizationDeclaration env]
-                 optimizations = Prelude.foldl (.) id [removeUselessTransfers]
+                 optimizations = if options ^. enableOptimizations 
+                                    then Prelude.foldl (.) id [preEvaluateChunks Nothing]
+                                    else id
              newProgram & maybe (pure ()) (\instructions -> 
                loadedPrograms %= M.insert newProgramName (optimizations . standarize $ instructions))
              processPrograms xs
