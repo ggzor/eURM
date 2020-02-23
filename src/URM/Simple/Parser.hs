@@ -10,26 +10,29 @@ import Text.Megaparsec
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 
-import Protolude
+import Protolude hiding (many)
 import Control.Monad (fail)
 import Data.Text (unpack)
 
 type URMSimpleParser = Parsec Void Text
 
-urmStatement :: URMSimpleParser URM
-urmStatement = (  zeroStatement 
-              <|> successorStatement
-              <|> transferStatement
-              <|> jumpStatement) <?> "simple urm statement"
+instructions :: URMSimpleParser [URM]
+instructions = many (lexeme instruction) <?> "simple urm instructions"
 
-zeroStatement, successorStatement, transferStatement, jumpStatement :: URMSimpleParser URM
-zeroStatement      = genericStatement 'Z' 1 <&> (\[r]       -> Zero r)       <?> "zero statement"
-successorStatement = genericStatement 'S' 1 <&> (\[r]       -> Successor r)  <?> "successor statement"
-transferStatement  = genericStatement 'T' 2 <&> (\[s, d]    -> Transfer s d) <?> "transfer statement"
-jumpStatement      = genericStatement 'J' 3 <&> (\[l, r, i] -> Jump l r i)   <?> "jump statement"
+instruction :: URMSimpleParser URM
+instruction = (  zeroInstruction 
+             <|> successorInstruction
+             <|> transferInstruction
+             <|> jumpInstruction)     <?> "simple urm instruction"
 
-genericStatement :: Char -> Int -> URMSimpleParser [Int]
-genericStatement c arity =
+zeroInstruction, successorInstruction, transferInstruction, jumpInstruction :: URMSimpleParser URM
+zeroInstruction      = genericInstruction 'Z' 1 <&> (\[r]       -> Zero r)       <?> "zero instruction"
+successorInstruction = genericInstruction 'S' 1 <&> (\[r]       -> Successor r)  <?> "successor instruction"
+transferInstruction  = genericInstruction 'T' 2 <&> (\[s, d]    -> Transfer s d) <?> "transfer instruction"
+jumpInstruction      = genericInstruction 'J' 3 <&> (\[l, r, i] -> Jump l r i)   <?> "jump instruction"
+
+genericInstruction :: Char -> Int -> URMSimpleParser [Int]
+genericInstruction c arity =
   do _ <- lexeme (char c)
      _ <- lexeme (char '(')
      params <- lexeme parameter `sepBy1` lexeme (char ',')
