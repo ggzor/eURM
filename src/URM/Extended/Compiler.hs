@@ -1,172 +1,88 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 module URM.Extended.Compiler where
 
-import URM.Core
-import URM.Combination
-import URM.Optimization.LowLevel
-import URM.Extended.Core hiding (target)
+import URM.Simple.Core
+import URM.Extended.BuiltIns
+import URM.Extended.Combination
+import URM.Extended.Core
 
-import Data.Functor ((<&>))
-import Data.Maybe
-import qualified Data.Vector as V
-import Control.Applicative
-import Data.Foldable (asum)
-import Control.Monad (join)
-import Control.Monad.Trans.State
+import Polysemy
+import Polysemy.Error
+import Polysemy.Input
+import Polysemy.Input.Utils
+
 import Control.Lens
 
-import GHC.IO.Unsafe
+import Protolude hiding (Reader, asks, State, get, runReader)
+import qualified Data.Map.Strict as M
+import qualified Data.Vector as V
+import Data.Vector.Utils
 
-import Data.Map.Strict as M
+type Env = Map Text InstructionsVec
+data CompilationError = UnsupportedDeclarationType EURMTag | InvalidRecursiveCall Text [Variable] | UndefinedProgram Text
+type CompilationUnit r = Members '[Input Env, Error CompilationError] r
+type InstructionsVec = V.Vector URM
 
-data EURMCompilationError = None
+data DeclarationCompiler r = forall a. DeclarationCompiler (Prism' EURM a)  (a -> Sem r InstructionsVec)
 
-instance Show EURMCompilationError where
-  show _ = "Compilation error"
+compileDeclaration :: forall r. CompilationUnit r => EURM -> Sem r InstructionsVec
+compileDeclaration dec =
+  do let declarationCompilers = 
+           [ DeclarationCompiler _RawDeclaration       compileRawDeclaration
+           , DeclarationCompiler _AliasDeclaration     compileAliasDeclaration
+           , DeclarationCompiler _CompositeDeclaration compileCompositeDeclaration
+           , DeclarationCompiler _RecursiveDeclaration compileRecursiveDeclaration] :: [DeclarationCompiler r]
+     let compilationResult = foldr' (\(DeclarationCompiler deconstructor compiler) result -> 
+                                         (compiler <$> dec ^? deconstructor) <|> result)
+                                    Nothing declarationCompilers
+     fromMaybe (throw . UnsupportedDeclarationType $ getEURMTag dec) compilationResult
 
-type Env = Map String Instructions
+compileRawDeclaration       :: CompilationUnit r => RawDeclarationFields       -> Sem r InstructionsVec
+compileAliasDeclaration     :: CompilationUnit r => AliasDeclarationFields     -> Sem r InstructionsVec
+compileCompositeDeclaration :: CompilationUnit r => CompositeDeclarationFields -> Sem r InstructionsVec
+compileRecursiveDeclaration :: CompilationUnit r => RecursiveDeclarationFields -> Sem r InstructionsVec
 
-data CompilerOptions = CompilerOptions { _enableOptimizations :: !Bool }
-makeLenses ''CompilerOptions
+compileRawDeclaration       (_, decCode)            = pure . fromSeq $ decCode
+compileAliasDeclaration     (_, decTarget)          = searchProgram decTarget
+compileCompositeDeclaration (_, decParams, decBody) = compileExpressionWithParameters decParams decBody
 
-data CompilerState = CompilerState { _loadedPrograms :: !Env }
-makeLenses ''CompilerState
+compileRecursiveDeclaration (decName, decNonRecVars, decRecVar, decBaseCase, decRecStep) =
+  do let recResultVar = "_recursiveResult"
+     baseCaseProgram       <- compileExpressionWithParameters decNonRecVars decBaseCase
+     replacedRecursiveStep <- replaceRecursiveCalls decName decNonRecVars decRecVar recResultVar decRecStep
+     recursiveStepProgram  <- compileExpressionWithParameters 
+                                (decNonRecVars ++ [decRecVar, recResultVar])
+                                replacedRecursiveStep
+     return . fromSeq $ recurse (length decNonRecVars) baseCaseProgram recursiveStepProgram
 
-builtIns = Prelude.foldl (\env (name, body) -> M.insert name (body env) env) M.empty 
-            [ ("__builtin_successor", successor)
-            , ("__builtin_signum", signum)
-            , ("__builtin_sum", sum)
-            , ("__builtin_product", product)]
-  where successor = const . V.singleton $ Successor 1
-        signum = const . V.fromList $
-                   [ Jump 1 2 4
-                   , Successor 2
-                   , Transfer 2 1 ]
-        sum = const . V.fromList $ 
-                [ Jump 2 3 5
-                , Successor 1
-                , Successor 3
-                , Jump 1 1 1]
-        product env = fromMaybe undefined $ fromRecursiveDeclaration env
-                        ("__builtin_product", ["x"], "y"
-                            , Constant 0
-                            , Call "__builtin_sum" [Call "__builtin_product" [Name "x", Name "y"], Name "x"])
+searchProgram :: CompilationUnit r => Text -> Sem r InstructionsVec
+searchProgram programName = 
+  do targetProgram <- input <&> M.lookup programName
+     maybe (throw $ UndefinedProgram programName) 
+            return targetProgram
 
-removeBuiltIns = 
-    M.delete "__builtin_successor" 
-  . M.delete "__builtin_signum"
-  . M.delete "__builtin_sum" 
-  . M.delete "__builtin_product"
+compileExpression :: CompilationUnit r => Expression -> Sem r InstructionsVec
+compileExpression (Constant i) = return $ constant i
+compileExpression (Name decName) = searchProgram decName
+compileExpression (Call decName decParameters) =
+  do program <- searchProgram decName
+     parameterPrograms <- traverse compileExpression decParameters
+     return . fromSeq $ compose (length parameterPrograms) program parameterPrograms
 
-compileEURM :: Env -> CompilerOptions -> [EURM] -> Either EURMCompilationError Env
-compileEURM env options programs = Right $ removeBuiltIns (evalState (processPrograms programs) $ CompilerState (M.union env builtIns))
-  where processPrograms [] = use loadedPrograms
-        processPrograms (x : xs) =
-          do env <- use loadedPrograms
-             let newProgramName = x ^. name
-                 newProgram = asum
-                                [ x ^? _RawDeclaration._2
-                                , x ^? _CompositeDeclaration  >>= fromCompositeDeclaration env
-                                , x ^? _AliasDeclaration._2   >>= flip M.lookup env
-                                , x ^? _RecursiveDeclaration  >>= fromRecursiveDeclaration env
-                                , x ^? _BoundedSumDeclaration >>= fromBoundedSumDeclaration env
-                                , x ^? _BoundedProductDeclaration >>= fromBoundedProductDeclaration env
-                                , x ^? _BoundedMinimizationDeclaration >>= fromBoundedMinimizationDeclaration env]
-                 optimizations = if options ^. enableOptimizations 
-                                    then Prelude.foldl (.) id [preEvaluateChunks Nothing]
-                                    else id
-             newProgram & maybe (pure ()) (\instructions -> 
-               loadedPrograms %= M.insert newProgramName (optimizations . standarize $ instructions))
-             processPrograms xs
+compileExpressionWithParameters :: CompilationUnit r => [Variable] -> Expression -> Sem r InstructionsVec
+compileExpressionWithParameters params expr =
+  let newEnv = M.union . M.fromList . fmap (second project) $ zip params [1..]
+  in compileExpression expr & mapInput newEnv
 
-type BoundedMinimizationDeclarationFields = (String, [Variable], Variable, Expression, Expression)
-fromBoundedMinimizationDeclaration :: Env -> BoundedMinimizationDeclarationFields -> Maybe Instructions
-fromBoundedMinimizationDeclaration env (name, parameters, index, top, body) =
-  let innerIndexName = "__innerIndex"
-      innerBody = Call "__builtin_signum" [replaceName index innerIndexName body]
-      outerIndexName = "__outerIndex"
-      productProgramName = "__innerProduct"
-      productProgram = fromBoundedProductDeclaration env 
-                         (productProgramName, parameters ++ [outerIndexName], innerIndexName
-                         , Call "__builtin_successor" [Name outerIndexName]
-                         , innerBody)
-      sumProgramName = "__outerSum"
-      modifiedEnv = (\p -> env & at productProgramName ?~ p) <$> productProgram
- in flip fromBoundedSumDeclaration
-      ( sumProgramName
-      , parameters, outerIndexName, top
-      , Call productProgramName ((Name <$> parameters) ++ [Name outerIndexName])) =<< modifiedEnv
-
-replaceName :: String -> String -> Expression -> Expression
-replaceName original new (Name actual) | original == actual = Name new
-replaceName original new (Call callName params) = Call callName (replaceName original new <$> params)
-replaceName _ _ other = other
-
-type BoundedProductDeclarationFields = (String, [Variable], Variable, Expression, Expression)
-fromBoundedProductDeclaration :: Env -> BoundedProductDeclarationFields -> Maybe Instructions
-fromBoundedProductDeclaration env (name, parameters, index, top, body) = 
-  let namedParams = Name <$> parameters
-      auxiliarProgramName = "__recursiveBoundedProduct"
-      auxiliarRecursiveStep = Call "__builtin_product" [Call auxiliarProgramName (namedParams ++ [Name index]), body] 
-      auxiliarProgram = fromRecursiveDeclaration env 
-                          (auxiliarProgramName, parameters, index, Constant 1, auxiliarRecursiveStep)
-      modifiedEnv = (\p -> env & at auxiliarProgramName ?~ p) <$> auxiliarProgram
-      finalExpression = Call auxiliarProgramName (namedParams ++ [top])
-  in flip fromCompositeDeclaration (name, parameters, finalExpression) =<< modifiedEnv
-
-type BoundedSumDeclarationFields = (String, [Variable], Variable, Expression, Expression)
-fromBoundedSumDeclaration :: Env -> BoundedSumDeclarationFields -> Maybe Instructions 
-fromBoundedSumDeclaration env (name, parameters, index, top, body) =
-  let namedParams = Name <$> parameters
-      auxiliarProgramName = "__recursiveBoundedSum"
-      auxiliarRecursiveStep = Call "__builtin_sum" [Call auxiliarProgramName (namedParams ++ [Name index]), body]
-      auxiliarProgram = fromRecursiveDeclaration env
-                          (auxiliarProgramName, parameters, index, Constant 0, auxiliarRecursiveStep)
-      modifiedEnv = (\p -> env & at auxiliarProgramName ?~ p) <$> auxiliarProgram
-      finalExpression = Call auxiliarProgramName (namedParams ++ [top])                      
-  in flip fromCompositeDeclaration (name, parameters, finalExpression) =<< modifiedEnv
-
-type CompositeDeclarationFields = (String, [Variable], Expression)
-fromCompositeDeclaration :: Env -> CompositeDeclarationFields -> Maybe Instructions
-fromCompositeDeclaration env (name, parameters, body) = 
-  let indexedParams = M.fromList $ zip parameters [1..]
-  in expressionToProgram indexedParams env body
-
-type RecursiveDeclarationFields = (String, [Variable], Variable, Expression, Expression)
-
-fromRecursiveDeclaration :: Env -> RecursiveDeclarationFields -> Maybe Instructions
-fromRecursiveDeclaration env (name, nonRecursiveVars, recursiveVar, baseCase, recursiveStep) =
-  let n = Prelude.length nonRecursiveVars
-      baseCaseParams = M.fromList $ zip nonRecursiveVars [1..]
-      recursiveResultVar = "__recursiveResult"
-      recursiveStepParams = baseCaseParams & at recursiveVar       ?~ (n + 1)
-                                           & at recursiveResultVar ?~ (n + 2)
-      baseCaseProgram = expressionToProgram baseCaseParams env baseCase
-      recursiveStepExpression = replaceRecursiveCalls name 
-                                                      nonRecursiveVars recursiveVar recursiveResultVar
-                                                      recursiveStep
-      recursiveStepProgram = expressionToProgram recursiveStepParams env =<< recursiveStepExpression
-  in  recurse n <$> baseCaseProgram <*> recursiveStepProgram
-
-replaceRecursiveCalls :: String -> [Variable] -> Variable -> Variable -> Expression -> Maybe Expression
-replaceRecursiveCalls name extraVars recursiveVar specialVarName expr = 
-  let parametersToMatch = (Name <$> extraVars) ++ [Name recursiveVar]
-  in case expr of
-       Call callName params | callName == name ->
-         if parametersToMatch == params
-           then Just $ Name specialVarName
-           else Nothing
+replaceRecursiveCalls :: CompilationUnit r => Text -> [Variable] -> Variable -> Variable -> Expression -> Sem r Expression
+replaceRecursiveCalls decName nonRecVars recVar resultVar expr =
+  do let parametersToMatch = (Name <$> nonRecVars) ++ [Name recVar]
+     case expr of
+       Call callName params | callName == decName ->
+         if params == parametersToMatch
+           then return $ Name resultVar
+           else throw  $ InvalidRecursiveCall decName (parametersToMatch ^.. folded._Name)
        Call callName params ->
-         do newParams <- traverse 
-                           (replaceRecursiveCalls name extraVars recursiveVar specialVarName) 
-                           params
+         do newParams <- traverse (replaceRecursiveCalls decName nonRecVars recVar resultVar) params
             return $ Call callName newParams
-       other -> Just other
-
-expressionToProgram ::Map Variable Int -> Env -> Expression -> Maybe Instructions
-expressionToProgram _ _ (Constant i) = Just $ urmConstant i
-expressionToProgram variables programs (Name name) =
-  (urmProject <$> M.lookup name variables) <|> M.lookup name programs
-expressionToProgram variables programs (Call name params) =
-  do program <- M.lookup name programs
-     parametersPrograms <- traverse (expressionToProgram variables programs) params
-     return $ compose (M.size variables) program parametersPrograms
+       other -> return other
