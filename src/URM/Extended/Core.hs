@@ -2,6 +2,7 @@
 module URM.Extended.Core where
 
 import URM.Simple.Core
+import URM.TH
 
 import Control.Lens
 
@@ -13,24 +14,26 @@ type Variable = Text
 data Expression = Constant !Int 
                 | Name !Text
                 | Call !Text ![Expression]
+                deriving (Eq)
+makePrisms ''Expression
 
 data EURM = 
     RawDeclaration 
       { _name :: !Text
       , _code :: !InstructionsSeq }
+  | AliasDeclaration 
+      { _name   :: !Text
+      , _target :: !Variable }
+  | CompositeDeclaration 
+      { _name       :: !Text
+      , _parameters :: ![Variable]
+      , _body       :: !Expression }
   | RecursiveDeclaration 
       { _name             :: !Text
       , _nonRecursiveVars :: ![Variable]
       , _recursiveVar     :: !Variable
       , _baseCase         :: !Expression
       , _recursiveStep    :: !Expression }
-  | CompositeDeclaration 
-      { _name       :: !Text
-      , _parameters :: ![Variable]
-      , _body       :: !Expression }
-  | AliasDeclaration 
-      { _name   :: !Text
-      , _target :: !Variable }
   | BoundedMinimizationDeclaration 
       { _name       :: !Text
       , _parameters :: ![Variable]
@@ -52,3 +55,5 @@ data EURM =
 
 makePrisms ''EURM
 makeLenses ''EURM
+makeFieldNames ''EURM
+makeTags ''EURM
