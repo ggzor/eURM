@@ -1,52 +1,54 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 module URM.Extended.Core where
 
-import URM.Core
+import URM.Simple.Core
 
 import Control.Lens
 
-type Variable = String
+import Protolude
+
+type InstructionsSeq = Seq URM
+type Variable = Text
 
 data Expression = Constant !Int 
-                | Name !String
-                | Call !String ![Expression]
-                deriving (Show, Eq)
+                | Name !Text
+                | Call !Text ![Expression]
 
 data EURM = 
     RawDeclaration 
-      { _name :: !String
-      , _code :: !Instructions }
+      { _name :: !Text
+      , _code :: !InstructionsSeq }
   | RecursiveDeclaration 
-      { _name             :: !String
+      { _name             :: !Text
       , _nonRecursiveVars :: ![Variable]
       , _recursiveVar     :: !Variable
       , _baseCase         :: !Expression
       , _recursiveStep    :: !Expression }
   | CompositeDeclaration 
-      { _name       :: !String
+      { _name       :: !Text
       , _parameters :: ![Variable]
       , _body       :: !Expression }
   | AliasDeclaration 
-      { _name   :: !String
+      { _name   :: !Text
       , _target :: !Variable }
   | BoundedMinimizationDeclaration 
-      { _name       :: !String
+      { _name       :: !Text
       , _parameters :: ![Variable]
       , _index      :: !Variable
       , _top        :: !Expression
       , _body       :: !Expression }
   | BoundedSumDeclaration
-      { _name       :: !String
+      { _name       :: !Text
       , _parameters :: ![Variable]
       , _index      :: !Variable
       , _top        :: !Expression
       , _body       :: !Expression }
   | BoundedProductDeclaration
-      { _name       :: !String
+      { _name       :: !Text
       , _parameters :: ![Variable]
       , _index      :: !Variable
       , _top        :: !Expression
       , _body       :: !Expression }
-  deriving Show
 
 makePrisms ''EURM
 makeLenses ''EURM

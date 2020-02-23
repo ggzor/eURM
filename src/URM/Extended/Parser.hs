@@ -1,98 +1,86 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 module URM.Extended.Parser where
 
-import Control.Lens
-
-import URM.RawParser (multipleURMStatements)
 import URM.Extended.Core hiding (name)
+import URM.Simple.Parser
 import URM.Parsing
 
+import Control.Lens
 import Text.Megaparsec
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
-import Text.Megaparsec.Debug
-import Text.Megaparsec.Error
 
-import Data.Void
+import Protolude hiding (many, try)
+import Data.Sequence
+import Data.Text
 
-type Parser = Parsec Void String
-type EURMParseError = ParseErrorBundle String Void
+type URMExtendedParser = Parsec Void Text
 
-parseEURM :: String -> Either EURMParseError [EURM]
-parseEURM = parse multipleDeclarations ""
+name :: URMExtendedParser Text
+name = (lexeme . fmap pack $ (:) <$> letterChar <*> many (alphaNumChar <|> char '_')) <?> "name"
 
-multipleDeclarations :: Parser [EURM]
-multipleDeclarations = spaceConsumer >> many (lexeme declaration)
+expression, constant, call :: URMExtendedParser Expression
+expression = constant <|> call <|> (Name <$> name)
 
-declaration :: Parser EURM
+constant = lexeme $ Constant <$> L.decimal
+
+call = do callName <- try $ name <* symbol "("
+          params <- expression `sepBy1` symbol "," <?> "call parameters"
+          _ <- symbol ")"
+          return $ Call callName params
+
+-- Order matters due to backtracking
+declaration :: URMExtendedParser EURM
 declaration = choice [ rawDeclaration
+                     , aliasDeclaration
                      , recursiveDeclaration
                      , boundedMinimizationDeclaration
                      , boundedSumDeclaration
                      , boundedProductDeclaration
-                     , compositeDeclaration
-                     , aliasDeclaration ]
+                     , compositeDeclaration ]
 
-rawDeclaration, recursiveDeclaration, 
-  compositeDeclaration, aliasDeclaration, boundedMinimizationDeclaration :: Parser EURM
-
-name :: Parser String
-name = lexeme $ (:) <$> letterChar <*> many alphaNumChar
+rawDeclaration, aliasDeclaration, compositeDeclaration :: URMExtendedParser EURM
+recursiveDeclaration :: URMExtendedParser EURM
+boundedMinimizationDeclaration, boundedSumDeclaration, boundedProductDeclaration :: URMExtendedParser EURM
 
 rawDeclaration = do decName <- try $ name <* symbol ":"
-                    RawDeclaration decName <$> multipleURMStatements
-                    
-recursiveDeclaration = 
-  do (_name, _nonRecursiveVars) <- 
-        try $ do decName <- name
-                 symbol "("
-                 vars <- name `sepEndBy` symbol ","
-                 symbol "0"
-                 return (decName, vars)
-     symbols ")="
-     _baseCase <- expression
-     symbol _name
-     symbol "("
-     mapM_ (\v -> symbol v >> symbol ",") _nonRecursiveVars
-     _recursiveVar <- name
-     symbols "+1)="
-     _recursiveStep <- expression
-     return RecursiveDeclaration {..}
-     
+                    RawDeclaration decName . fromList <$> instructions
 
-expression :: Parser Expression
-expression = constant <|> call <|> (Name <$> name)
-
-constant :: Parser Expression
-constant = lexeme $ Constant <$> L.decimal
-
-call :: Parser Expression
-call = do callName <- try $ name <* symbol "("
-          parameters <- expression `sepBy1` symbol ","
-          symbol ")"
-          return $ Call callName parameters
+aliasDeclaration = AliasDeclaration <$> try (name <* symbol "=") <*> name
 
 compositeDeclaration = 
-  do _name <- try $ name <* symbol "("
-     _parameters <- name `sepBy1` symbol "," 
-     symbols ")="
-     _body <- expression
+  do (_name, _parameters) <- parametrizedDeclaration
+     _ <- symbol "="
+     _body                <- expression              <?> "body"
      return $ CompositeDeclaration {..}
 
-aliasDeclaration = AliasDeclaration <$> name <* symbol "=" <*> name
+recursiveDeclaration = 
+  do (_name, _nonRecursiveVars) <- 
+       try $ (,) <$> (name                                       <?> "declaration name")
+                 <*> betweenParens ((name `sepEndBy` symbol ",") <?> "non-recursive variables")
+                 <*  symbol "0"
+     symbolsText ")="
+     let repeatedFirstPart = symbols [_name, "("] <* forM_ _nonRecursiveVars (\v -> symbols [v, ","])
+     _baseCase      <- expression  <?> "base case expression"
+     repeatedFirstPart
+     _recursiveVar  <- name        <?> "recursive variable"
+     symbolsText "+1)="
+     _recursiveStep <- expression  <?> "recursive case expression"
+     return RecursiveDeclaration {..}
 
 boundedMinimizationDeclaration = boundedDeclaration "μ" _BoundedMinimizationDeclaration
 boundedSumDeclaration          = boundedDeclaration "Σ" _BoundedSumDeclaration
 boundedProductDeclaration      = boundedDeclaration "Π" _BoundedProductDeclaration
 
-boundedDeclaration identifier prism =
-  do (_name, _parameters) <- try $ do decName <- name 
-                                      symbol "("
-                                      parameters <- name `sepBy1` symbol ","
-                                      symbols ")="
-                                      string identifier
-                                      return (decName, parameters)
-     _index <- name
-     symbol "<"
-     _top <- expression
-     _body <- between (symbol "[") (symbol "]") expression
-     return $ prism # (_name, _parameters, _index, _top, _body)
+boundedDeclaration :: Text -> AReview b (Text, [Text], Text, Expression, Expression) -> URMExtendedParser b
+boundedDeclaration identifier constructor =
+  do (_name, _parameters) <- try $ parametrizedDeclaration <* symbols ["=", identifier]
+     _index <- name                              <?> "index variable"
+     _      <- symbol "<"
+     _top   <- expression                        <?> "top expression"
+     _body  <- betweenSquareBrackets (expression <?> "body")
+     return $ constructor # (_name, _parameters, _index, _top, _body)
+
+parametrizedDeclaration :: URMExtendedParser (Text, [Text])
+parametrizedDeclaration = (,) <$> (name                                     <?> "declaration name")
+                              <*> betweenParens ((name `sepBy1` symbol ",") <?> "parameters")
