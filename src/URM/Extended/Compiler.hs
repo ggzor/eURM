@@ -18,14 +18,14 @@ import qualified Data.Map.Strict as M
 import qualified Data.Vector as V
 import Data.Vector.Utils
 
-type Env = Map Text InstructionsVec
+type Env = Map Text Program
 data CompilationError = UnsupportedDeclarationType EURMTag | InvalidRecursiveCall Text [Variable] | UndefinedProgram Text
 type CompilationUnit r = Members '[Input Env, Error CompilationError] r
-type InstructionsVec = V.Vector URM
+type Program = V.Vector URM
 
-data DeclarationCompiler r = forall a. DeclarationCompiler (Prism' EURM a)  (a -> Sem r InstructionsVec)
+data DeclarationCompiler r = forall a. DeclarationCompiler (Prism' EURM a)  (a -> Sem r Program)
 
-compileDeclaration :: forall r. CompilationUnit r => EURM -> Sem r InstructionsVec
+compileDeclaration :: forall r. CompilationUnit r => EURM -> Sem r Program
 compileDeclaration dec =
   do let declarationCompilers = 
            [ DeclarationCompiler _RawDeclaration       compileRawDeclaration
@@ -37,10 +37,10 @@ compileDeclaration dec =
                                     Nothing declarationCompilers
      fromMaybe (throw . UnsupportedDeclarationType $ getEURMTag dec) compilationResult
 
-compileRawDeclaration       :: CompilationUnit r => RawDeclarationFields       -> Sem r InstructionsVec
-compileAliasDeclaration     :: CompilationUnit r => AliasDeclarationFields     -> Sem r InstructionsVec
-compileCompositeDeclaration :: CompilationUnit r => CompositeDeclarationFields -> Sem r InstructionsVec
-compileRecursiveDeclaration :: CompilationUnit r => RecursiveDeclarationFields -> Sem r InstructionsVec
+compileRawDeclaration       :: CompilationUnit r => RawDeclarationFields       -> Sem r Program
+compileAliasDeclaration     :: CompilationUnit r => AliasDeclarationFields     -> Sem r Program
+compileCompositeDeclaration :: CompilationUnit r => CompositeDeclarationFields -> Sem r Program
+compileRecursiveDeclaration :: CompilationUnit r => RecursiveDeclarationFields -> Sem r Program
 
 compileRawDeclaration       (_, decCode)            = pure . fromSeq $ decCode
 compileAliasDeclaration     (_, decTarget)          = searchProgram decTarget
@@ -55,24 +55,24 @@ compileRecursiveDeclaration (decName, decNonRecVars, decRecVar, decBaseCase, dec
                                 replacedRecursiveStep
      return . fromSeq $ recurse (length decNonRecVars) baseCaseProgram recursiveStepProgram
 
-searchProgram :: CompilationUnit r => Text -> Sem r InstructionsVec
+searchProgram :: CompilationUnit r => Text -> Sem r Program
 searchProgram programName = 
   do targetProgram <- input <&> M.lookup programName
      maybe (throw $ UndefinedProgram programName) 
             return targetProgram
 
-compileExpression :: CompilationUnit r => Expression -> Sem r InstructionsVec
-compileExpression (Constant i) = return $ constant i
-compileExpression (Name decName) = searchProgram decName
-compileExpression (Call decName decParameters) =
+compileExpression :: CompilationUnit r => Int -> Expression -> Sem r Program
+compileExpression _ (Constant i) = return $ constant i
+compileExpression _ (Name decName) = searchProgram decName
+compileExpression arity (Call decName decParameters) =
   do program <- searchProgram decName
-     parameterPrograms <- traverse compileExpression decParameters
-     return . fromSeq $ compose (length parameterPrograms) program parameterPrograms
+     parameterPrograms <- traverse (compileExpression arity) decParameters
+     return . fromSeq $ compose arity program parameterPrograms
 
-compileExpressionWithParameters :: CompilationUnit r => [Variable] -> Expression -> Sem r InstructionsVec
+compileExpressionWithParameters :: CompilationUnit r => [Variable] -> Expression -> Sem r Program
 compileExpressionWithParameters params expr =
   let newEnv = M.union . M.fromList . fmap (second project) $ zip params [1..]
-  in compileExpression expr & mapInput newEnv
+  in compileExpression (length params) expr & mapInput newEnv
 
 replaceRecursiveCalls :: CompilationUnit r => Text -> [Variable] -> Variable -> Variable -> Expression -> Sem r Expression
 replaceRecursiveCalls decName nonRecVars recVar resultVar expr =
