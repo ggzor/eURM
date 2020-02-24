@@ -1,161 +1,196 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 module Main where
 
-import URM.Core
-import URM.Interpreter
-import URM.Parsing
+import URM.Repl.Commands
+import URM.Repl.Options
 
+import URM.Simple.Core
 import URM.Extended.Compiler
-import URM.Extended.Parser (parseEURM, name, EURMParseError)
+import URM.Extended.Core
+import URM.Extended.Modules
+
+import URM.Interpreter
 
 import Control.Lens
+import Control.Lens.Unsound
 
-import Text.Megaparsec
-import Text.Megaparsec.Char
-import Text.Megaparsec.Char.Lexer (decimal)
-import Text.Megaparsec.Error
+import Data.Text as T (intercalate, splitOn, unpack)
+import Data.Foldable
+import Text.Megaparsec (errorBundlePretty, ParseErrorBundle)
 
-import qualified Data.Vector as V
+import Polysemy
+import Polysemy.Error
+import Polysemy.Input
+import Polysemy.State
+import Polysemy.Input.Utils
 
-import Data.Bifunctor
-import Data.Maybe
+import Protolude hiding (State, evalState, get, to, moduleName, intercalate, modify, evaluate)
 import Data.Map.Strict as M
 import Data.Set as S
-import Control.Monad
-import Control.Monad.IO.Class
-import Control.Monad.Trans.Class
-import Control.Monad.Trans.State
-import Control.Monad.Trans.Maybe
-import Control.Applicative ((<*>))
-import Data.Void
-import System.IO
+import qualified Data.Vector as V
+import qualified Prelude as P
 import System.Directory
+import System.IO (hFlush)
 
-data InterpreterState = 
-  InterpreterState { _programs :: !(Map String Instructions)
-                   , _compilerOptions :: !CompilerOptions
-                   , _loadedFiles :: ![String] }
-makeLenses ''InterpreterState
+import Fmt
+
+data CommandOutput = EvaluationResult !Int
+                   | CompiledModule !ModuleDefinition 
+                   | ReloadedModules ![ModuleDefinition]
+                   | ViewCode !Program
+
+data InputOutputError = UnexistentFile Text
+
+data ReplError = ParseCommandError (ParseErrorBundle Text ReplCommandParserError)
+               | ReplModuleLoadingError ModuleLoadingError
+               | ReplIOError InputOutputError
+               | ReloadError ReplError
+               | StepsLimitError
+               | ReplUndefinedProgram Text
+               | QuitRepl
+
+data ModuleDefinition = 
+  ModuleDefinition { _file       :: !Text
+                   , _moduleName :: !ModuleName
+                   , _contents   :: !ModuleData }
+makePrisms ''CommandOutput
+makeLenses ''ModuleDefinition
+
+data ReplState = 
+  ReplState { _loadedModules :: [ModuleDefinition] 
+            , _loadedFiles   :: Set Text }
+makeLenses ''ReplState
+
+
+defaultReplOptions :: ReplOptions
+defaultReplOptions =
+  ReplOptions { _interfaceOptions = 
+                  InterfaceOptions { _prompt = "> " }
+              , _executionOptions = 
+                  ExecutionOptions { _maxSteps = 100000 } }
+
+initialReplState :: ReplState
+initialReplState = 
+  ReplState { _loadedModules = [], _loadedFiles = S.empty }
 
 main :: IO ()
-main = () <$ runMaybeT (evalStateT mainInterpreter (InterpreterState M.empty (CompilerOptions False) []))
+main = repl 
+     & evalState defaultReplOptions
+     & evalState initialReplState
+     & runM
 
-mainInterpreter :: StateT InterpreterState (MaybeT IO) ()
-mainInterpreter =
-  do liftIO $ putStr "> " >> hFlush stdout
-     line <- liftIO getLine
-     case parse interpreterStatement "" line of
-       Left error -> liftIO (putStr (errorBundlePretty error)) >> mainInterpreter
-       Right action ->
-        case action of
-          ReplStatement Quit -> liftIO (putStrLn "Bye, bye") >> lift (fail "")
-          ReplStatement Reload -> do liftIO $ putStrLn "Reloading files..."
-                                     programs .= M.empty
-                                     currentLoadedFiles <- use loadedFiles
-                                     loadedFiles .= []
-                                     mapM_ loadFile currentLoadedFiles
-                                     mainInterpreter
-          ReplStatement (SetCompilerFlag value flag) ->
-            do case flag of 
-                 Optimizations -> compilerOptions.enableOptimizations .= value
-               mainInterpreter
-          ReplStatement (ViewCode programName) ->
-            do currentPrograms <- use programs
-               case M.lookup programName currentPrograms of
-                 Nothing -> liftIO $ putStrLn ("Unknown program name " ++ programName)
-                 Just instructions -> do liftIO $ putStrLn (programName ++ ":")
-                                         liftIO $ putStrLn (prettyPrintURM instructions)
-               mainInterpreter
-          ReplStatement (DumpCode pretty programName path) ->
-            do currentPrograms <- use programs
-               case M.lookup programName currentPrograms of
-                 Nothing -> liftIO $ putStrLn ("Unknown program name: " ++ programName)
-                 Just program -> liftIO $ writeFile path $ if pretty 
-                                                             then prettyPrintURM program
-                                                             else (unlines $ show <$> V.toList program)
-               mainInterpreter
-          ReplStatement (Load path) -> loadFile path >> mainInterpreter
-          EvaluateStatement programName params ->
-            do currentPrograms <- use programs
-               -- TODO: Arity warnings
-               -- TODO: Maximum instruction count
-               case M.lookup programName currentPrograms of
-                 Nothing -> liftIO $ putStrLn ("Unknown program name: " ++ programName)
-                 Just program -> liftIO $ putStrLn $ maybe 
-                                                       ("The program didn't end after " ++ show maxInstructions ++ " instructions") 
-                                                       show
-                                                       (evaluate maxInstructions program mappedParams)
-                                   where mappedParams = M.fromAscList $ zip [1..] params
-                                         maxInstructions = 100000
-               mainInterpreter
+repl :: Members '[Embed IO, State ReplOptions, State ReplState] r 
+     => Sem r ()
+repl = do result <- runError actions
+          either (\case 
+            QuitRepl -> embed $ putStrLn @Text "Quitting the REPL..."
+            other -> (handleReplError other) & inputToState >> repl) (const repl) result
+  where actions = readInput    & inputToState
+              >>= parseCommand & mapError ParseCommandError
+              >>= evalCommand  & inputToState @ReplState
+                               & inputToState @ReplOptions
+              >>= processOutput
 
-loadFile :: String -> StateT InterpreterState (MaybeT IO) ()
-loadFile path = 
-  do contents <- liftIO ((<|>) <$> readContentsIfExists path <*> readContentsIfExists (path ++ ".eurm"))
-     case contents of
-       Nothing -> liftIO $ putStrLn ("Unable to find file " ++ path)
-       Just contents -> do liftIO $ putStrLn $ "Loading file " ++ path
-                           currentPrograms <- use programs
-                           options <- use compilerOptions
-                           case parseEURMFile currentPrograms options contents of
-                             Left (SyntaxError error) -> 
-                               do liftIO $ putStrLn "Syntax error:"
-                                  liftIO $ putStr (errorBundlePretty error)
-                             Left (CompilationError error) ->
-                               do liftIO $ putStrLn "Compilation error:"
-                                  liftIO $ print error
-                             Right newPrograms ->
-                                 do let newNames = M.keysSet newPrograms
-                                    let joinedNames names = unlines ["  - " ++ name | name <- S.toList names]
-                                    programs .= newPrograms
-                                    loadedFiles %= (++ [path])
-                                    liftIO $ putStrLn $ "Successfully loaded " ++ show (S.size newNames) ++ " new programs:"
-                                    liftIO $ putStrLn (joinedNames newNames)
+handleReplError :: Members '[Embed IO, Input ReplOptions] r 
+                => ReplError -> Sem r ()
+handleReplError = \case
+  ReplIOError replIOError -> case replIOError of
+    UnexistentFile filePath -> embed $ putStrLn @Text $ "The file \""+|filePath|+"\" doesn't exist"
+  ReplModuleLoadingError loadingError -> case loadingError of
+    ParsingError parseError -> embed $ putStr @P.String $ errorBundlePretty parseError
+    DeclarationCompilationError decCompilationError -> case decCompilationError of
+      UnsupportedDeclarationType tag -> embed $ putStrLn @P.String $ "Unsupported declaration type: " ++ show tag
+      InvalidRecursiveCall callName params -> 
+        embed $ putStrLn @Text $   "There is an invalid recursive call in the definition of "+|callName|+".\n"
+                               +|| "The only valid recursive call is: "+|callName|+"("+|", " `intercalate` params|+")"
+      UndefinedProgram undefProgram -> embed $ putStrLn @Text $ "Undefined program: "+|undefProgram|+""
+    DuplicatedNames dupNames -> embed $ putStrLn @Text $ fmt $ nameF "The following names are duplicated" $ blockListF dupNames
+    UndefinedReferences undefNames -> embed $ putStrLn @Text $ fmt $ nameF "The following names aren't defined" $ blockListF undefNames
+    CyclicDependency p1 p2 -> embed $ putStrLn @Text $ "There is a cyclic dependency between the following declarations: "+|p1|+" and "+|p2|+""
+  ParseCommandError parseError -> embed $ putStr @P.String $ errorBundlePretty parseError
+  ReloadError reloadError -> handleReplError reloadError
+  ReplUndefinedProgram progName -> embed $ putStrLn @Text $ "Unknown program name: "+|progName|+""
+  StepsLimitError -> 
+    do stepsLimit <- input <&> view (executionOptions.maxSteps)
+       embed $ putStrLn @Text $ "The program reached the steps limit"
+  QuitRepl -> pure ()
 
-readContentsIfExists :: String -> IO (Maybe String)
-readContentsIfExists path =
-  do exists <- doesFileExist path
-     if exists
-       then Just <$> readFile path
-       else return Nothing
+readInput :: Members '[Input ReplOptions, Embed IO] r => Sem r Text
+readInput = 
+  do replOptions <- input <&> view (interfaceOptions.prompt)
+     embed $ putStr replOptions >> hFlush stdout
+     embed getLine
 
-data EURMFileError = SyntaxError EURMParseError | CompilationError EURMCompilationError
+processOutput :: Members '[State ReplState, Embed IO] r
+              => CommandOutput -> Sem r ()
+processOutput = \case
+  CompiledModule moduleDef ->
+    do modify $ over loadedModules (moduleDef :)
+       modify $ over loadedFiles (S.insert (moduleDef ^. file))
+       embed $ putStrLn @Text $ "Successfully loaded module "+|moduleDef^.moduleName|+""
+       embed $ putStrLn @Text $ fmt $ nameF ("Loaded "+|(moduleDef & lengthOf (contents.programs.folded))|+" new programs") $ blockListF $ moduleDef ^.. contents.programs.folded.declaration.to eurmAsText
+  ReloadedModules modules ->
+    do modify $ set loadedModules []
+       forM_ modules (processOutput . CompiledModule)
+  EvaluationResult result ->
+    embed $ putStrLn @Text $ ""+|result|+""
+  ViewCode code ->
+    embed $ putStrLn @Text $ fmt $ indentF 4 $ unlinesF . fmap urmAsText $ V.toList code
 
-parseEURMFile :: Env -> CompilerOptions -> String -> Either EURMFileError (Map String Instructions)
-parseEURMFile env options contents = first SyntaxError (parseEURM contents)
-                                       >>= (first CompilationError . compileEURM env options)
+evalCommand :: Members '[Embed IO, Error ReplError, Input ReplState, Input ReplOptions] r
+            => ReplCommand -> Sem r CommandOutput
+evalCommand = \case
+  View name ->
+    do programDecl <- searchReplProgram name
+       return . ViewCode $ programDecl ^. program 
+  Evaluate name inputs ->
+    do stepsLimit <- input @ReplOptions <&> view (executionOptions.maxSteps)
+       programDecl <- searchReplProgram name
+       let initialState = M.fromList $ zip [1..] inputs
+       case evaluate stepsLimit (programDecl ^. program) initialState of
+         Nothing -> throw StepsLimitError
+         Just evalResult -> return $ EvaluationResult evalResult
+  Load filePath ->
+    do (_file, fileContents) <- [filePath|+".eurm", filePath] 
+                     &  traversed (\t -> runError $ (t,) <$> readFileContents t)
+                    <&> foldl1 (<>)
+                    <&> first ReplIOError
+                    >>= fromEither
+       let _moduleName = T.intercalate "." . Protolude.initDef ["main"] $ splitOn "." _file
+       embed $ putStrLn @Text $ "Compiling module "+|_moduleName|+"..."
+       _contents <- loadFromText fileContents
+                      & mapReplStateToEnv
+                      & mapError ReplModuleLoadingError
+       return $ CompiledModule ModuleDefinition {..}
+  Reload -> 
+    do files <- input @ReplState <&> view loadedFiles <&> S.toList
+       (ReloadedModules . catMaybes <$> forM files (fmap (preview _CompiledModule) . evalCommand . Load)) 
+          & inputToState @Env
+          & evalState M.empty
+          & mapError ReloadError
+  Quit -> throw QuitRepl
+  _ -> undefined
 
-{-
-Grammar
-  <statement> ::= <repl-statement> | <evaluate-program-statement>
-  
-  <repl-statement> ::= ':' (<repl-load-statement> | <repl-quit-statement>)
-  <repl-load-statement> ::= 'load' <file-path>
-  <repl-quit-statement> ::= 'quit'
-  
-  <evaluate-program-statement> ::= <name> { <parameter> }
--}
+readFileContents :: Members '[Embed IO, Error InputOutputError] r => Text -> Sem r Text
+readFileContents filePath =
+  do exists <- embed $ doesFileExist (unpack filePath)
+     if exists 
+       then embed $ readFile (unpack filePath)
+       else throw (UnexistentFile filePath)
 
-data CompilerFlag = Optimizations
-data ReplAction = Load String | DumpCode Bool String String | SetCompilerFlag Bool CompilerFlag | ViewCode String | Reload | Quit
-data InterpreterStatement = ReplStatement ReplAction | EvaluateStatement String [Int]
+searchReplProgram :: Members '[Error ReplError, Input ReplState] r
+                  => Text -> Sem r ProgramDeclaration
+searchReplProgram programName =
+  do targetProgram <- input <&> viewProgramDecls <&> M.lookup programName
+     maybe (throw $ ReplUndefinedProgram programName) 
+            return targetProgram
 
+mapReplStateToEnv :: Member (Input ReplState) r => Sem (Input Env ': r) a -> Sem r a
+mapReplStateToEnv = mapInput @Env @ReplState 
+                          ( M.fromList 
+                          . fmap (view $ lensProduct programName program) 
+                          . toListOf (loadedModules.folded.contents.programs.folded))
 
-type MainParser = Parsec Void String
-interpreterStatement = (replStatement <|> evaluateProgramStatement) <* spaceConsumer <* eof
-
-evaluateProgramStatement :: MainParser InterpreterStatement
-evaluateProgramStatement = EvaluateStatement <$> lexeme (some alphaNumChar) <*> decimal `sepEndBy` space1
-
-replStatement :: MainParser InterpreterStatement
-replStatement = char ':' >> ReplStatement <$> (replLoadStatement <|> replViewCodeStatement <|> replDumpCodeStatement
-                                                <|> replSetCompilerFlag <|> replQuitStatement <|> replReloadStatement)
-  where replLoadStatement = Load <$> (string "load" *> space1 *> takeRest)
-        replViewCodeStatement = ViewCode <$> (string "view" *> space1 *> takeRest)
-        replDumpCodeStatement = string "dump" *> (DumpCode <$> (maybe False (const True) <$> optional (string "+")) <*> (space1 *> name) <*> takeRest)
-        replQuitStatement = Quit <$ string "quit"
-        replSetCompilerFlag = string "set" *> space1 *> (SetCompilerFlag <$> (("+" ==) <$> (string "+" <|> string "-")) <*> compilerFlag)
-        replReloadStatement = Reload <$ string "reload"
-
-
-compilerFlag :: MainParser CompilerFlag
-compilerFlag = Optimizations <$ string "optimizations"
+viewProgramDecls = (M.fromList 
+                          . fmap (view $ lensProduct programName identity) 
+                          . toListOf (loadedModules.folded.contents.programs.folded))
