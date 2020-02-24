@@ -1,10 +1,10 @@
 module URM.Interpreter (
   RegistersState, 
-  Instructions, 
   evaluate
   ) where
 
-import URM.Core
+import URM.Simple.Core
+import URM.Extended.Compiler (Program)
 
 import Control.Lens hiding (index)
 import Control.Monad.Trans.State
@@ -17,7 +17,7 @@ type RegistersState = M.Map Int Int
 data URMState = URMState { _index :: !Int, _steps :: !Int, _registers :: !RegistersState }
 makeLenses ''URMState
 
-evaluate :: Int -> Instructions -> RegistersState -> Maybe Int
+evaluate :: Int -> Program -> RegistersState -> Maybe Int
 evaluate maxSteps instructions = evalState execution . URMState 0 0
   where execution =
           do idx <- use index
