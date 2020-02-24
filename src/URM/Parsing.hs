@@ -20,7 +20,7 @@ symbol :: (MonadParsec e s m, Token s ~ Char, IsString (Tokens s)) => Tokens s -
 symbol = L.symbol spaceConsumer
 
 symbols :: (MonadParsec e s m, Token s ~ Char, IsString (Tokens s)) => [Tokens s] -> m () 
-symbols = mapM_ symbol
+symbols = mapM_ (lexeme . symbol)
 
 symbolsText :: (MonadParsec e s m, Token s ~ Char, Tokens s ~ Text) => String -> m ()
 symbolsText = symbols . fmap singleton
