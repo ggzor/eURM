@@ -27,6 +27,7 @@ import Polysemy.Input.Utils
 import Protolude hiding (State, evalState, get, to, moduleName, intercalate, modify, evaluate)
 import Data.Map.Strict as M
 import Data.Set as S
+import qualified Data.Text as T
 import qualified Data.Vector as V
 import qualified Prelude as P
 import System.Directory
@@ -67,7 +68,7 @@ defaultReplOptions =
   ReplOptions { _interfaceOptions = 
                   InterfaceOptions { _prompt = "> " }
               , _executionOptions = 
-                  ExecutionOptions { _maxSteps = 100000 } }
+                  ExecutionOptions { _maxSteps = 1000000 } }
 
 initialReplState :: ReplState
 initialReplState = 
@@ -135,8 +136,9 @@ processOutput = \case
   EvaluationResult result ->
     embed $ putStrLn @Text $ ""+|result|+""
   ViewCode code ->
-    embed $ putStrLn @Text $ fmt $ indentF 4 $ unlinesF . fmap urmAsText $ V.toList code
-
+    embed $ putStrLn @Text $ T.unlines
+                           . zipWith (\i l -> fmt $ "  " +| padLeftF (T.length . show $ V.length code) ' ' i|+". "+|l|+"") [(1 :: Int)..] 
+                           . fmap urmAsText $ V.toList code
 evalCommand :: Members '[Embed IO, Error ReplError, Input ReplState, Input ReplOptions] r
             => ReplCommand -> Sem r CommandOutput
 evalCommand = \case
