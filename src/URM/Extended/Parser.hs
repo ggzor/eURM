@@ -29,6 +29,9 @@ call = do callName <- try $ name <* symbol "("
           _ <- symbol ")"
           return $ Call callName params
 
+declarations :: URMExtendedParser [EURM]
+declarations = spaceConsumer >> many declaration
+
 -- Order matters due to backtracking
 declaration :: URMExtendedParser EURM
 declaration = choice [ rawDeclaration
@@ -57,7 +60,7 @@ compositeDeclaration =
 recursiveDeclaration = 
   do (_name, _nonRecursiveVars) <- 
        try $ (,) <$> (name                                       <?> "declaration name")
-                 <*> betweenParens ((name `sepEndBy` symbol ",") <?> "non-recursive variables")
+                 <*> (symbol "(" >> (name `sepEndBy` symbol ",") <?> "non-recursive variables")
                  <*  symbol "0"
      symbolsText ")="
      let repeatedFirstPart = symbols [_name, "("] <* forM_ _nonRecursiveVars (\v -> symbols [v, ","])
