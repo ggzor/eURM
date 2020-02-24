@@ -28,23 +28,25 @@ data DeclarationCompiler r = forall a. DeclarationCompiler (Prism' EURM a)  (a -
 compileDeclaration :: forall r. CompilationUnit r => EURM -> Sem r Program
 compileDeclaration dec =
   do let declarationCompilers = 
-           [ DeclarationCompiler _RawDeclaration            compileRawDeclaration
-           , DeclarationCompiler _AliasDeclaration          compileAliasDeclaration
-           , DeclarationCompiler _CompositeDeclaration      compileCompositeDeclaration
-           , DeclarationCompiler _RecursiveDeclaration      compileRecursiveDeclaration
-           , DeclarationCompiler _BoundedSumDeclaration     compileBoundedSumDeclaration
-           , DeclarationCompiler _BoundedProductDeclaration compileBoundedProductDeclaration] :: [DeclarationCompiler r]
+           [ DeclarationCompiler _RawDeclaration                 compileRawDeclaration
+           , DeclarationCompiler _AliasDeclaration               compileAliasDeclaration
+           , DeclarationCompiler _CompositeDeclaration           compileCompositeDeclaration
+           , DeclarationCompiler _RecursiveDeclaration           compileRecursiveDeclaration
+           , DeclarationCompiler _BoundedSumDeclaration          compileBoundedSumDeclaration
+           , DeclarationCompiler _BoundedProductDeclaration      compileBoundedProductDeclaration
+           , DeclarationCompiler _BoundedMinimizationDeclaration compileBoundedMinimizationDeclaration] :: [DeclarationCompiler r]
      let compilationResult = foldr' (\(DeclarationCompiler deconstructor compiler) result -> 
                                          (compiler <$> dec ^? deconstructor) <|> result)
                                     Nothing declarationCompilers
      fromMaybe (throw . UnsupportedDeclarationType $ getEURMTag dec) compilationResult
 
-compileRawDeclaration            :: CompilationUnit r => RawDeclarationFields            -> Sem r Program
-compileAliasDeclaration          :: CompilationUnit r => AliasDeclarationFields          -> Sem r Program
-compileCompositeDeclaration      :: CompilationUnit r => CompositeDeclarationFields      -> Sem r Program
-compileRecursiveDeclaration      :: CompilationUnit r => RecursiveDeclarationFields      -> Sem r Program
-compileBoundedSumDeclaration     :: CompilationUnit r => BoundedSumDeclarationFields     -> Sem r Program
-compileBoundedProductDeclaration :: CompilationUnit r => BoundedProductDeclarationFields -> Sem r Program
+compileRawDeclaration                 :: CompilationUnit r => RawDeclarationFields                 -> Sem r Program
+compileAliasDeclaration               :: CompilationUnit r => AliasDeclarationFields               -> Sem r Program
+compileCompositeDeclaration           :: CompilationUnit r => CompositeDeclarationFields           -> Sem r Program
+compileRecursiveDeclaration           :: CompilationUnit r => RecursiveDeclarationFields           -> Sem r Program
+compileBoundedSumDeclaration          :: CompilationUnit r => BoundedSumDeclarationFields          -> Sem r Program
+compileBoundedProductDeclaration      :: CompilationUnit r => BoundedProductDeclarationFields      -> Sem r Program
+compileBoundedMinimizationDeclaration :: CompilationUnit r => BoundedMinimizationDeclarationFields -> Sem r Program
 
 compileRawDeclaration       (_, decCode)            = pure . fromSeq $ decCode
 compileAliasDeclaration     (_, decTarget)          = searchProgram decTarget
@@ -79,6 +81,21 @@ compileBoundedProductDeclaration (decName, decParams, decIdx, decTop, decBody) =
      compileCompositeDeclaration (decName, decParams, finalExpr)
        & mapInput (M.insert recProductName recProduct)
 
+compileBoundedMinimizationDeclaration (_, decParams, decIdx, decTop, decBody) =
+  do let namedParams = Name <$> decParams
+         innerIdxName = "_innerIdx"
+         outerIdxName = "_outerIdx"
+         innerProdName = "_innerProd"
+         outerSumName = "_outerSum"
+         innerBody = Call "_signum" [replaceName decIdx innerIdxName decBody]
+     innerProgram <- compileBoundedProductDeclaration ( innerProdName, decParams ++ [outerIdxName], innerIdxName
+                                                      , Call "_successor" [Name outerIdxName], innerBody)
+                                                      & mapInput ( M.insert "_successor" BuiltIns.successor
+                                                                 . M.insert "_signum"    BuiltIns.signum)
+     compileBoundedSumDeclaration ( outerSumName, decParams, outerIdxName, decTop
+                                  , Call innerProdName (namedParams ++ [Name outerIdxName]))
+                                  & mapInput (M.insert innerProdName innerProgram)
+
 searchProgram :: CompilationUnit r => Text -> Sem r Program
 searchProgram programName = 
   do targetProgram <- input <&> M.lookup programName
@@ -110,3 +127,8 @@ replaceRecursiveCalls decName nonRecVars recVar resultVar expr =
          do newParams <- traverse (replaceRecursiveCalls decName nonRecVars recVar resultVar) params
             return $ Call callName newParams
        other -> return other
+
+replaceName :: Text -> Text -> Expression -> Expression
+replaceName original new (Name actual) | actual == original = Name new
+replaceName original new (Call callName params) = Call callName (replaceName original new <$> params)
+replaceName _ _ other = other
