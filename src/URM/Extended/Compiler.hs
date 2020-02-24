@@ -2,7 +2,7 @@
 module URM.Extended.Compiler where
 
 import URM.Simple.Core
-import URM.Extended.BuiltIns
+import URM.Extended.BuiltIns as BuiltIns
 import URM.Extended.Combination
 import URM.Extended.Core
 
@@ -28,32 +28,56 @@ data DeclarationCompiler r = forall a. DeclarationCompiler (Prism' EURM a)  (a -
 compileDeclaration :: forall r. CompilationUnit r => EURM -> Sem r Program
 compileDeclaration dec =
   do let declarationCompilers = 
-           [ DeclarationCompiler _RawDeclaration       compileRawDeclaration
-           , DeclarationCompiler _AliasDeclaration     compileAliasDeclaration
-           , DeclarationCompiler _CompositeDeclaration compileCompositeDeclaration
-           , DeclarationCompiler _RecursiveDeclaration compileRecursiveDeclaration] :: [DeclarationCompiler r]
+           [ DeclarationCompiler _RawDeclaration            compileRawDeclaration
+           , DeclarationCompiler _AliasDeclaration          compileAliasDeclaration
+           , DeclarationCompiler _CompositeDeclaration      compileCompositeDeclaration
+           , DeclarationCompiler _RecursiveDeclaration      compileRecursiveDeclaration
+           , DeclarationCompiler _BoundedSumDeclaration     compileBoundedSumDeclaration
+           , DeclarationCompiler _BoundedProductDeclaration compileBoundedProductDeclaration] :: [DeclarationCompiler r]
      let compilationResult = foldr' (\(DeclarationCompiler deconstructor compiler) result -> 
                                          (compiler <$> dec ^? deconstructor) <|> result)
                                     Nothing declarationCompilers
      fromMaybe (throw . UnsupportedDeclarationType $ getEURMTag dec) compilationResult
 
-compileRawDeclaration       :: CompilationUnit r => RawDeclarationFields       -> Sem r Program
-compileAliasDeclaration     :: CompilationUnit r => AliasDeclarationFields     -> Sem r Program
-compileCompositeDeclaration :: CompilationUnit r => CompositeDeclarationFields -> Sem r Program
-compileRecursiveDeclaration :: CompilationUnit r => RecursiveDeclarationFields -> Sem r Program
+compileRawDeclaration            :: CompilationUnit r => RawDeclarationFields            -> Sem r Program
+compileAliasDeclaration          :: CompilationUnit r => AliasDeclarationFields          -> Sem r Program
+compileCompositeDeclaration      :: CompilationUnit r => CompositeDeclarationFields      -> Sem r Program
+compileRecursiveDeclaration      :: CompilationUnit r => RecursiveDeclarationFields      -> Sem r Program
+compileBoundedSumDeclaration     :: CompilationUnit r => BoundedSumDeclarationFields     -> Sem r Program
+compileBoundedProductDeclaration :: CompilationUnit r => BoundedProductDeclarationFields -> Sem r Program
 
 compileRawDeclaration       (_, decCode)            = pure . fromSeq $ decCode
 compileAliasDeclaration     (_, decTarget)          = searchProgram decTarget
 compileCompositeDeclaration (_, decParams, decBody) = compileExpressionWithParameters decParams decBody
 
 compileRecursiveDeclaration (decName, decNonRecVars, decRecVar, decBaseCase, decRecStep) =
-  do let recResultVar = "_recursiveResult"
+  do let recResultVar = "_recResult"
      baseCaseProgram       <- compileExpressionWithParameters decNonRecVars decBaseCase
      replacedRecursiveStep <- replaceRecursiveCalls decName decNonRecVars decRecVar recResultVar decRecStep
      recursiveStepProgram  <- compileExpressionWithParameters 
                                 (decNonRecVars ++ [decRecVar, recResultVar])
                                 replacedRecursiveStep
      return . fromSeq $ recurse (length decNonRecVars) baseCaseProgram recursiveStepProgram
+
+compileBoundedSumDeclaration (decName, decParams, decIdx, decTop, decBody) =
+  do let namedParams = Name <$> decParams
+         recSumName = "_recSum"
+         recStepSum = Call "_sum" [Call recSumName (namedParams ++ [Name decIdx]), decBody]
+     recSum <- compileRecursiveDeclaration (recSumName, decParams, decIdx, Constant 0, recStepSum)
+                 & mapInput (M.insert "_sum" BuiltIns.sum)
+     let finalExpr = Call recSumName (namedParams ++ [decTop])
+     compileCompositeDeclaration (decName, decParams, finalExpr)
+       & mapInput (M.insert recSumName recSum)
+
+compileBoundedProductDeclaration (decName, decParams, decIdx, decTop, decBody) =
+  do let namedParams = Name <$> decParams
+         recProductName = "_recProduct"
+         recStepProduct = Call "_product" [Call recProductName (namedParams ++ [Name decIdx]), decBody]
+     recProduct <- compileRecursiveDeclaration (recProductName, decParams, decIdx, Constant 1, recStepProduct)
+                     & mapInput (M.insert "_product" BuiltIns.product)
+     let finalExpr = Call recProductName (namedParams ++ [decTop])
+     compileCompositeDeclaration (decName, decParams, finalExpr)
+       & mapInput (M.insert recProductName recProduct)
 
 searchProgram :: CompilationUnit r => Text -> Sem r Program
 searchProgram programName = 
