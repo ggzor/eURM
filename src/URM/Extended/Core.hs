@@ -37,12 +37,6 @@ data EURM =
       , _recursiveVar     :: !Variable
       , _baseCase         :: !Expression
       , _recursiveStep    :: !Expression }
-  | BoundedMinimizationDeclaration 
-      { _name       :: !Text
-      , _parameters :: ![Variable]
-      , _index      :: !Variable
-      , _top        :: !Expression
-      , _body       :: !Expression }
   | BoundedSumDeclaration
       { _name       :: !Text
       , _parameters :: ![Variable]
@@ -50,6 +44,12 @@ data EURM =
       , _top        :: !Expression
       , _body       :: !Expression }
   | BoundedProductDeclaration
+      { _name       :: !Text
+      , _parameters :: ![Variable]
+      , _index      :: !Variable
+      , _top        :: !Expression
+      , _body       :: !Expression }
+  | BoundedMinimizationDeclaration 
       { _name       :: !Text
       , _parameters :: ![Variable]
       , _index      :: !Variable
